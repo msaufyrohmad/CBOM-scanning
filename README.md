@@ -9,6 +9,15 @@ Crypography in All Layers
 Types of Cryptographic Sources
 <img width="973" height="543" alt="image" src="https://github.com/user-attachments/assets/ef3feee4-a90c-4fb6-b8ec-fbd4202cde55" />
 
+INSTALLATION 
+
+Download all codes in a directory
+
+$pip install pipreqs
+$pipreqs .
+$pip install -r requirements.txt
+
+
 The code will be updates and please update and give comment!
 
 
