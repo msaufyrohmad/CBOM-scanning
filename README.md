@@ -18,7 +18,9 @@ Download all codes in a directory
 $pip install -r requirements.txt
 
 
-<br> The code will be updates and please update and give comment!</br>
+<br> The code will be updates from time to time </br>
+
+<br> please update and give comment!</br>
 
 
 <br> Muhammad Saufy Rohmad </br>
