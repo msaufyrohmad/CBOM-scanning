@@ -18,7 +18,7 @@ Download all codes in a directory
 $pip install -r requirements.txt
 
 
-<br> The code will be updates from time to time </br>
+<br> The code will be updated from time to time </br>
 
 <br> please update and give comment!</br>
 
