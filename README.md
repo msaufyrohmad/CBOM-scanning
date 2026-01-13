@@ -13,15 +13,15 @@ INSTALLATION
 
 Download all codes in a directory
 
-$pip install pipreqs
-$pipreqs .
+<br> $pip install pipreqs </br>
+<br> $pipreqs . </br>
 $pip install -r requirements.txt
 
 
-The code will be updates and please update and give comment!
+<br> The code will be updates and please update and give comment!</br>
 
 
-Muhammad Saufy Rohmad
-Malaysia Cryptology Technology and Management Center
+<br> Muhammad Saufy Rohmad </br>
+<br> Malaysia Cryptology Technology and Management Center</br>
 
 
