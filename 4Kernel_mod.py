@@ -103,6 +103,7 @@ def detect_crypto(strings_data):
 
 def run_linux_scan():
     modules = get_kernel_modules_linux()
+    print(modules)
 
     if not modules:
         print("[!] No kernel modules found.")
