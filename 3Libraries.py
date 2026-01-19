@@ -242,6 +242,7 @@ def main():
         ])
 
         for lib in find_libraries():
+            print(lib)
             if lib.lower().endswith(".a"):
                 lib_type = "static"
             elif lib.lower().endswith(".la"):
