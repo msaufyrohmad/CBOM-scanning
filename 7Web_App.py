@@ -168,6 +168,7 @@ def main(roots=None):
 
             for dirpath, _, filenames in os.walk(root):
                 for name in filenames:
+                    print(name)
                     if not name.lower().endswith(WEB_EXTENSIONS):
                         continue
 
