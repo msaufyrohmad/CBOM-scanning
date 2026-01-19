@@ -1,14 +1,28 @@
 #!/usr/bin/env python3
 
 import os
+import platform
 import subprocess
 import csv
 import re
 
-# === Crypto detection rules ===
+# ==========================================================
+# OS DETECTION
+# ==========================================================
+
+def detect_os():
+    if os.name == "nt" or platform.system().lower().startswith("win"):
+        return "windows"
+    return "unix"
+
+OS_TYPE = detect_os()
+
+# ==========================================================
+# CRYPTO DETECTION RULES (UNCHANGED)
+# ==========================================================
+
 CRYPTO_RULES = {
 
-    # === Symmetric Ciphers ===
     "AES": {
         "primitive": "block-cipher",
         "modes": ["ECB", "CBC", "CTR", "GCM", "CCM", "XTS"],
@@ -21,7 +35,6 @@ CRYPTO_RULES = {
         "cyclonedx_family": "ChaCha20"
     },
 
-    # === AEAD ===
     "AES-GCM": {
         "primitive": "aead",
         "cyclonedx_family": "AES-GCM"
@@ -32,7 +45,6 @@ CRYPTO_RULES = {
         "cyclonedx_family": "ChaCha20-Poly1305"
     },
 
-    # === Hash Functions ===
     "SHA-1": {
         "primitive": "hash",
         "cyclonedx_family": "SHA-1"
@@ -59,7 +71,6 @@ CRYPTO_RULES = {
         "deprecated": True
     },
 
-    # === Public Key / Asymmetric ===
     "RSA": {
         "primitive": "public-key",
         "key_lengths": [1024, 2048, 3072, 4096],
@@ -85,14 +96,12 @@ CRYPTO_RULES = {
         "cyclonedx_family": "Ed25519"
     },
 
-    # === MAC ===
     "HMAC": {
         "primitive": "mac",
         "hashes": ["SHA-256", "SHA-384", "SHA-512"],
         "cyclonedx_family": "HMAC"
     },
 
-    # === Protocols ===
     "TLS": {
         "primitive": "protocol",
         "versions": ["1.0", "1.1", "1.2", "1.3"],
@@ -107,8 +116,6 @@ CRYPTO_RULES = {
     }
 }
 
-
-
 CRYPTO_LIB_PATTERNS = [
     "libcrypto",
     "libssl",
@@ -120,23 +127,47 @@ CRYPTO_LIB_PATTERNS = [
     "nettle"
 ]
 
-LIB_DIRS = [
-    "/lib",
-    "/lib64",
-    "/usr/lib",
-    "/usr/lib64",
-    "/usr/local/lib"
-]
+# ==========================================================
+# LIBRARY SEARCH PATHS (OS-SPECIFIC)
+# ==========================================================
 
-# === Helpers ===
+if OS_TYPE == "unix":
+    LIB_DIRS = [
+        "/lib",
+        "/lib64",
+        "/usr/lib",
+        "/usr/lib64",
+        "/usr/local/lib"
+    ]
+    LIB_EXTS = (".so", ".a", ".la")
+else:
+    LIB_DIRS = [
+        os.environ.get("SystemRoot", "C:\\Windows") + "\\System32",
+        os.environ.get("SystemRoot", "C:\\Windows") + "\\SysWOW64"
+    ]
+    LIB_EXTS = (".dll", ".lib")
+
+# ==========================================================
+# HELPERS
+# ==========================================================
+
 def run_cmd(cmd):
     try:
-        return subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode()
+        if OS_TYPE == "windows":
+            return subprocess.check_output(
+                cmd, stderr=subprocess.DEVNULL, shell=True
+            ).decode(errors="ignore")
+        else:
+            return subprocess.check_output(
+                cmd, stderr=subprocess.DEVNULL
+            ).decode(errors="ignore")
     except Exception:
         return ""
 
 def is_library(path):
-    return path.endswith((".so", ".a", ".la")) or ".so." in path
+    if OS_TYPE == "windows":
+        return path.lower().endswith(LIB_EXTS)
+    return path.endswith(LIB_EXTS) or ".so." in path
 
 def find_libraries():
     libs = set()
@@ -149,12 +180,20 @@ def find_libraries():
                         libs.add(os.path.realpath(full))
     return sorted(libs)
 
-def get_ldd_crypto_libs(lib):
-    if not lib.endswith(".so") and ".so." not in lib:
-        return "not-applicable"
+# ==========================================================
+# DEPENDENCY SCANNING
+# ==========================================================
 
+def get_crypto_deps(lib):
     libs = set()
-    out = run_cmd(["ldd", lib])
+
+    if OS_TYPE == "unix":
+        if not lib.endswith(".so") and ".so." not in lib:
+            return "not-applicable"
+        out = run_cmd(["ldd", lib])
+    else:
+        out = run_cmd(f'dumpbin /imports "{lib}"')
+
     for line in out.splitlines():
         for pat in CRYPTO_LIB_PATTERNS:
             if pat.lower() in line.lower():
@@ -162,28 +201,38 @@ def get_ldd_crypto_libs(lib):
 
     return ",".join(sorted(libs)) if libs else "none"
 
+# ==========================================================
+# CRYPTO DETECTION (STRINGS-BASED)
+# ==========================================================
+
 def detect_crypto(lib):
     results = []
-    strings_out = run_cmd(["strings", lib])
+    strings_out = run_cmd(
+        ["strings", lib] if OS_TYPE == "unix"
+        else f'strings "{lib}"'
+    )
 
     for alg, meta in CRYPTO_RULES.items():
         if alg in strings_out:
             key_size = "unknown"
-            if "key_sizes" in meta:
-                for size in meta["key_sizes"]:
-                    if re.search(rf"{alg}[-_ ]?{size}", strings_out):
-                        key_size = size
-
+            for size in meta.get("key_lengths", []):
+                if re.search(rf"{alg}[-_ ]?{size}", strings_out):
+                    key_size = size
+                    break
             results.append((alg, meta["primitive"], key_size))
 
     return results
 
-# === Main ===
+# ==========================================================
+# MAIN
+# ==========================================================
+
 def main():
-    with open("library_crypto_inventory.csv", "w", newline="") as f:
+    with open("library.csv", "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow([
             "library",
+            "os_type",
             "library_type",
             "crypto_dependency",
             "algorithm",
@@ -193,40 +242,43 @@ def main():
         ])
 
         for lib in find_libraries():
-            if lib.endswith(".a"):
+            if lib.lower().endswith(".a"):
                 lib_type = "static"
-            elif lib.endswith(".la"):
+            elif lib.lower().endswith(".la"):
                 lib_type = "libtool"
+            elif lib.lower().endswith(".lib"):
+                lib_type = "import-lib"
             else:
                 lib_type = "shared"
 
-            crypto_deps = get_ldd_crypto_libs(lib)
+            crypto_deps = get_crypto_deps(lib)
             crypto_hits = detect_crypto(lib)
 
             if not crypto_hits:
                 writer.writerow([
                     lib,
+                    OS_TYPE,
                     lib_type,
                     crypto_deps,
                     "unknown",
                     "unknown",
                     "unknown",
-                    "ldd-only" if crypto_deps != "none" else "static-string"
+                    "dependency-only" if crypto_deps != "none" else "static-string"
                 ])
             else:
                 for alg, primitive, key_size in crypto_hits:
                     writer.writerow([
                         lib,
+                        OS_TYPE,
                         lib_type,
                         crypto_deps,
                         alg,
                         primitive,
                         key_size,
-                        "ldd + static-string"
+                        "dependency + strings"
                     ])
 
     print("[+] CSV generated: library_crypto_inventory.csv")
 
 if __name__ == "__main__":
     main()
-
