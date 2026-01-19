@@ -315,6 +315,7 @@ def main():
         ])
 
         for binary in list_binaries():
+            print(binary)
             libs = get_crypto_deps(binary)
             if libs == "none":
                 continue
