@@ -3,15 +3,17 @@
 import subprocess
 import csv
 import re
+import platform
+import sys
 from pathlib import Path
 
-OUTPUT_CSV = "kernel_modules_crypto.csv"
+OUTPUT_CSV = "kernel_modules.csv"
 
 # --- Crypto detection patterns ---
 CRYPTO_ALGOS = {
     "AES": r"\b(aes|AES)(128|192|256)?\b",
     "DES": r"\bDES\b",
-    "3DES": r"\b3DES|DES-EDE\b",
+    "3DES": r"\b(3DES|DES-EDE)\b",
     "ChaCha20": r"\bChaCha20\b",
     "RSA": r"\bRSA(1024|2048|3072|4096)?\b",
     "ECC": r"\b(ECC|ECDSA|ECDH|Curve25519|secp256r1)\b",
@@ -39,27 +41,47 @@ PRIMITIVES_MAP = {
     "CMAC": "MAC",
 }
 
-# --- Helpers ---
-def get_kernel_modules():
-    cmd = ["find", f"/lib/modules/{Path('/proc/version').read_text().split()[2]}", "-type", "f", "-name", "*.ko*"]
-    return subprocess.check_output(cmd, text=True).splitlines()
+# ===============================
+# OS DETECTION
+# ===============================
+def detect_os():
+    return platform.system().lower()
 
-def extract_strings(module_path):
+# ===============================
+# LINUX IMPLEMENTATION
+# ===============================
+def get_kernel_modules_linux():
     try:
-        return subprocess.check_output(["strings", module_path], text=True, errors="ignore")
+        kernel_ver = Path("/proc/sys/kernel/osrelease").read_text().strip()
+        base = f"/lib/modules/{kernel_ver}"
+        cmd = ["find", base, "-type", "f", "-name", "*.ko*"]
+        return subprocess.check_output(cmd, text=True).splitlines()
+    except Exception as e:
+        print(f"[!] Failed to locate kernel modules: {e}")
+        return []
+
+def extract_strings(path):
+    try:
+        return subprocess.check_output(
+            ["strings", path],
+            text=True,
+            errors="ignore",
+            stderr=subprocess.DEVNULL
+        )
     except Exception:
         return ""
 
 def detect_crypto(strings_data):
-    algos = []
+    algos = set()
     primitives = set()
     key_sizes = set()
 
     for algo, pattern in CRYPTO_ALGOS.items():
         matches = re.findall(pattern, strings_data, re.IGNORECASE)
         if matches:
-            algos.append(algo)
+            algos.add(algo)
             primitives.add(PRIMITIVES_MAP.get(algo, "unknown"))
+
             for m in matches:
                 if isinstance(m, tuple):
                     for x in m:
@@ -73,15 +95,18 @@ def detect_crypto(strings_data):
         functions.update(re.findall(fp, strings_data))
 
     return {
-        "algorithms": ", ".join(sorted(set(algos))),
+        "algorithms": ", ".join(sorted(algos)),
         "primitives": ", ".join(sorted(primitives)),
         "key_sizes": ", ".join(sorted(key_sizes)) if key_sizes else "unknown",
         "functions": ", ".join(sorted(functions)),
     }
 
-# --- Main ---
-def main():
-    modules = get_kernel_modules()
+def run_linux_scan():
+    modules = get_kernel_modules_linux()
+
+    if not modules:
+        print("[!] No kernel modules found.")
+        return
 
     with open(OUTPUT_CSV, "w", newline="") as csvfile:
         writer = csv.writer(csvfile)
@@ -108,8 +133,33 @@ def main():
                     crypto["functions"]
                 ])
 
-    print(f"[+] Scan complete. Output saved to {OUTPUT_CSV}")
+    print(f"[+] Linux kernel crypto scan complete")
+    print(f"[+] Output saved to {OUTPUT_CSV}")
+
+# ===============================
+# WINDOWS PLACEHOLDER
+# ===============================
+def run_windows_scan():
+    print("[!] Windows detected")
+    print("[!] Linux kernel modules (.ko) do not exist on Windows")
+    print("[!] This script currently supports Linux only")
+    print("[i] Future extension: scan Windows drivers (.sys)")
+
+# ===============================
+# MAIN
+# ===============================
+def main():
+    os_type = detect_os()
+
+    print(f"[i] Detected OS: {os_type}")
+
+    if os_type == "linux":
+        run_linux_scan()
+    elif os_type == "windows":
+        run_windows_scan()
+    else:
+        print(f"[!] Unsupported OS: {os_type}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
-
