@@ -3,13 +3,14 @@
 import os
 import csv
 import hashlib
+import platform
 from datetime import timezone
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.asymmetric import rsa, ec, dsa, ed25519, ed448
 
-OUTPUT_CSV = "crypto_cert_key_inventory_detailed.csv"
+OUTPUT_CSV = "crypto_cert_key.csv"
 
 SCAN_EXTENSIONS = {
     ".crt", ".cer", ".pem", ".der",
@@ -17,13 +18,31 @@ SCAN_EXTENSIONS = {
     ".p12", ".pfx"
 }
 
+# =====================================================
+# OS DETECTION
+# =====================================================
+def detect_os():
+    return platform.system().lower()
+
+def default_scan_root():
+    os_type = detect_os()
+    if os_type == "windows":
+        return "C:\\"
+    return "/"
+
+# =====================================================
+# HELPERS
+# =====================================================
 def is_candidate(filename):
     return any(filename.lower().endswith(ext) for ext in SCAN_EXTENSIONS)
 
 def short_fingerprint(data):
     return hashlib.sha256(data).hexdigest()[:32]
 
-def scan_certificate(path, data):
+# =====================================================
+# CERTIFICATE ANALYSIS
+# =====================================================
+def scan_certificate(data):
     cert = x509.load_pem_x509_certificate(data, default_backend())
     pubkey = cert.public_key()
 
@@ -35,10 +54,9 @@ def scan_certificate(path, data):
     curve = ""
 
     if isinstance(pubkey, rsa.RSAPublicKey):
+        n = pubkey.public_numbers().n
         modulus_fp = hashlib.sha256(
-            pubkey.public_numbers().n.to_bytes(
-                (pubkey.key_size + 7) // 8, "big"
-            )
+            n.to_bytes((pubkey.key_size + 7) // 8, "big")
         ).hexdigest()[:32]
         exponent = pubkey.public_numbers().e
 
@@ -70,7 +88,10 @@ def scan_certificate(path, data):
         "fingerprint_sha256": cert.fingerprint(hashes.SHA256()).hex(),
     }
 
-def scan_private_key(path, data):
+# =====================================================
+# PRIVATE KEY ANALYSIS
+# =====================================================
+def scan_private_key(data):
     key = serialization.load_pem_private_key(
         data, password=None, backend=default_backend()
     )
@@ -83,10 +104,9 @@ def scan_private_key(path, data):
     curve = ""
 
     if isinstance(key, rsa.RSAPrivateKey):
+        n = key.private_numbers().public_numbers.n
         modulus_fp = hashlib.sha256(
-            key.private_numbers().public_numbers.n.to_bytes(
-                (key.key_size + 7) // 8, "big"
-            )
+            n.to_bytes((key.key_size + 7) // 8, "big")
         ).hexdigest()[:32]
         exponent = key.private_numbers().public_numbers.e
 
@@ -111,23 +131,35 @@ def scan_private_key(path, data):
         "fingerprint_sha256": hashlib.sha256(data).hexdigest(),
     }
 
+# =====================================================
+# FILE ANALYSIS
+# =====================================================
 def analyze_file(path):
     try:
         with open(path, "rb") as f:
             data = f.read()
 
         if b"BEGIN CERTIFICATE" in data:
-            return scan_certificate(path, data)
+            return scan_certificate(data)
 
         if b"BEGIN PRIVATE KEY" in data or b"BEGIN RSA PRIVATE KEY" in data:
-            return scan_private_key(path, data)
+            return scan_private_key(data)
 
     except Exception:
-        pass
+        return None
 
     return None
 
-def main(root="/"):
+# =====================================================
+# MAIN
+# =====================================================
+def main(scan_root=None):
+    scan_root = scan_root or default_scan_root()
+    os_type = detect_os()
+
+    print(f"[i] Detected OS: {os_type}")
+    print(f"[i] Scanning root: {scan_root}")
+
     with open(OUTPUT_CSV, "w", newline="", encoding="utf-8") as csvfile:
         writer = csv.writer(csvfile)
         writer.writerow([
@@ -149,7 +181,7 @@ def main(root="/"):
             "fingerprint_sha256",
         ])
 
-        for dirpath, _, filenames in os.walk(root):
+        for dirpath, _, filenames in os.walk(scan_root):
             for name in filenames:
                 if not is_candidate(name):
                     continue
@@ -180,5 +212,4 @@ def main(root="/"):
     print(f"[+] Scan complete → {OUTPUT_CSV}")
 
 if __name__ == "__main__":
-    main("/")
-
+    main()
