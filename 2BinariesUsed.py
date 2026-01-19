@@ -138,6 +138,7 @@ def main():
     scan_time = datetime.utcnow().isoformat()
 
     for proc in psutil.process_iter(["pid", "name", "exe", "cmdline"]):
+        print(proc)
         try:
             pid = proc.pid
             name = proc.info.get("name") or ""
