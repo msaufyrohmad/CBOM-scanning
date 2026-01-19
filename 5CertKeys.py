@@ -187,6 +187,7 @@ def main(scan_root=None):
                     continue
 
                 path = os.path.join(dirpath, name)
+                print(path)
                 result = analyze_file(path)
 
                 if result:
