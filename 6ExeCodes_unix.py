@@ -3,11 +3,12 @@
 import os
 import re
 import csv
+import platform
 from pathlib import Path
 
-OUTPUT_CSV = "exec_script_crypto_inventory.csv"
+OUTPUT_CSV = "exec_script.csv"
 
-SCRIPT_EXT = (".py", ".sh", ".pl", ".rb")
+SCRIPT_EXT = (".py", ".sh", ".pl", ".rb", ".ps1", ".bat", ".cmd")
 
 CRYPTO_PATTERNS = {
     "AES": {
@@ -48,13 +49,42 @@ CRYPTO_PATTERNS = {
     },
 }
 
+# =====================================================
+# OS DETECTION
+# =====================================================
+def detect_os():
+    return platform.system().lower()
+
+def default_scan_root():
+    os_type = detect_os()
+    if os_type == "windows":
+        return "C:\\"
+    return "/"
+
+# =====================================================
+# SCRIPT DETECTION
+# =====================================================
 def is_script(path):
+    os_type = detect_os()
+
+    # Windows: extension-based
+    if os_type == "windows":
+        return path.lower().endswith(SCRIPT_EXT)
+
+    # Unix-like: shebang OR extension
     try:
         with open(path, "rb") as f:
-            return f.readline().startswith(b"#!")
+            first = f.readline()
+            if first.startswith(b"#!"):
+                return True
     except Exception:
-        return False
+        pass
 
+    return path.lower().endswith(SCRIPT_EXT)
+
+# =====================================================
+# FILE SCANNING
+# =====================================================
 def scan_file(path):
     try:
         text = Path(path).read_text(errors="ignore")
@@ -67,6 +97,7 @@ def scan_file(path):
         for pat in meta["patterns"]:
             for m in re.findall(pat, text, re.IGNORECASE):
                 key_size = "unknown"
+
                 if isinstance(m, tuple):
                     for x in m:
                         if x.isdigit():
@@ -83,7 +114,16 @@ def scan_file(path):
 
     return findings
 
-def main(root="/"):
+# =====================================================
+# MAIN
+# =====================================================
+def main(scan_root=None):
+    scan_root = scan_root or default_scan_root()
+    os_type = detect_os()
+
+    print(f"[i] Detected OS: {os_type}")
+    print(f"[i] Scanning root: {scan_root}")
+
     with open(OUTPUT_CSV, "w", newline="", encoding="utf-8") as csvfile:
         writer = csv.writer(csvfile)
         writer.writerow([
@@ -95,16 +135,17 @@ def main(root="/"):
             "key_size"
         ])
 
-        for dirpath, _, filenames in os.walk(root):
+        for dirpath, _, filenames in os.walk(scan_root):
             for name in filenames:
-                if not name.endswith(SCRIPT_EXT):
+                if not name.lower().endswith(SCRIPT_EXT):
                     continue
 
                 path = os.path.join(dirpath, name)
+
                 if not is_script(path):
                     continue
 
-                lang = name.split(".")[-1]
+                lang = Path(name).suffix.lstrip(".") or "unknown"
                 findings = scan_file(path)
 
                 for f in findings:
@@ -120,5 +161,4 @@ def main(root="/"):
     print(f"[+] Scan complete → {OUTPUT_CSV}")
 
 if __name__ == "__main__":
-    main("/")
-
+    main()
