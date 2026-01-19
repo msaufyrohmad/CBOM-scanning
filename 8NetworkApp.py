@@ -94,6 +94,7 @@ def main():
 
     # ================= TLS & SSH CLIENT/SERVER =================
     for conn in psutil.net_connections(kind="inet"):
+        print(conn)
         if not conn.pid:
             continue
 
@@ -131,6 +132,7 @@ def main():
 
     # ================= IPsec SERVICES =================
     for proc in detect_ipsec_services():
+        print(proc)
         pname, exe, _ = identify_application(proc)
 
         rows.append([
