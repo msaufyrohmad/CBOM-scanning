@@ -137,6 +137,7 @@ def main(scan_root=None):
 
         for dirpath, _, filenames in os.walk(scan_root):
             for name in filenames:
+                print(name)
                 if not name.lower().endswith(SCRIPT_EXT):
                     continue
 
