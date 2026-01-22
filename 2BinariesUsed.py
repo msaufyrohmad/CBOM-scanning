@@ -1,204 +1,357 @@
 #!/usr/bin/env python3
-"""
-Cross-platform Crypto Process Scanner
-Detects crypto usage, primitives, algorithms, key sizes, functions
-Linux + Windows
-"""
 
-import psutil
+import os
 import platform
+import subprocess
 import csv
-import re
-from datetime import datetime
 
-OUTPUT_CSV = "binaries_used.csv"
-OS_TYPE = platform.system().lower()
+# ==========================================================
+# OS DETECTION
+# ==========================================================
 
-# -----------------------------
-# Crypto knowledge base
-# -----------------------------
+def detect_os():
+    if os.name == "nt" or platform.system().lower().startswith("win"):
+        return "windows"
+    return "unix"
+
+OS_TYPE = detect_os()
+
+# ==========================================================
+# CRYPTO RULES (CycloneDX-aligned)
+# ==========================================================
 
 CRYPTO_RULES = {
+
     "AES": {
-        "primitive": "block-cipher",
-        "key_sizes": ["128", "192", "256"],
-        "patterns": [r"aes[-_]?(\d{3})?", r"aesgcm", r"evp_aes"]
+        "algorithmProperties": {
+            "primitive": "block-cipher",
+            "algorithm": "AES",
+            "modes": ["ECB", "CBC", "CTR", "GCM", "CCM", "XTS"],
+            "keyLengths": [128, 192, 256]
+        }
     },
-    "ChaCha20": {
-        "primitive": "stream-cipher",
-        "key_sizes": ["256"],
-        "patterns": [r"chacha20", r"poly1305"]
+
+    "CHACHA20": {
+        "algorithmProperties": {
+            "primitive": "stream-cipher",
+            "algorithm": "ChaCha20"
+        }
     },
+
+    "AES-GCM": {
+        "algorithmProperties": {
+            "primitive": "aead",
+            "algorithm": "AES",
+            "mode": "GCM"
+        }
+    },
+
+    "CHACHA20-POLY1305": {
+        "algorithmProperties": {
+            "primitive": "aead",
+            "algorithm": "ChaCha20",
+            "mac": "Poly1305"
+        }
+    },
+
+    "SHA-1": {
+        "algorithmProperties": {
+            "primitive": "hash-function",
+            "algorithm": "SHA-1",
+            "deprecated": True
+        }
+    },
+
+    "SHA-256": {
+        "algorithmProperties": {
+            "primitive": "hash-function",
+            "algorithm": "SHA-256"
+        }
+    },
+
+    "SHA-384": {
+        "algorithmProperties": {
+            "primitive": "hash-function",
+            "algorithm": "SHA-384"
+        }
+    },
+
+    "SHA-512": {
+        "algorithmProperties": {
+            "primitive": "hash-function",
+            "algorithm": "SHA-512"
+        }
+    },
+
+    "MD5": {
+        "algorithmProperties": {
+            "primitive": "hash-function",
+            "algorithm": "MD5",
+            "deprecated": True
+        }
+    },
+
     "RSA": {
-        "primitive": "public-key",
-        "key_sizes": ["1024", "2048", "3072", "4096"],
-        "patterns": [r"rsa[-_]?(\d{4})?", r"rsassa"]
+        "algorithmProperties": {
+            "primitive": "public-key-encryption",
+            "algorithm": "RSA",
+            "keyLengths": [1024, 2048, 3072, 4096]
+        }
     },
-    "ECC": {
-        "primitive": "public-key",
-        "key_sizes": ["256", "384", "521"],
-        "patterns": [r"ecdsa", r"ecdh", r"curve25519", r"secp\d+"]
+
+    "ECDSA": {
+        "algorithmProperties": {
+            "primitive": "digital-signature",
+            "algorithm": "ECDSA",
+            "curves": ["P-256", "P-384", "P-521", "secp256k1"]
+        }
     },
-    "SHA": {
-        "primitive": "hash",
-        "key_sizes": ["1", "224", "256", "384", "512"],
-        "patterns": [r"sha[-_]?(\d{1,3})"]
+
+    "ECDH": {
+        "algorithmProperties": {
+            "primitive": "key-agreement",
+            "algorithm": "ECDH",
+            "curves": ["P-256", "P-384", "X25519", "X448"]
+        }
     },
+
+    "ED25519": {
+        "algorithmProperties": {
+            "primitive": "digital-signature",
+            "algorithm": "Ed25519"
+        }
+    },
+
     "HMAC": {
-        "primitive": "mac",
-        "key_sizes": [],
-        "patterns": [r"hmac"]
+        "algorithmProperties": {
+            "primitive": "mac",
+            "algorithm": "HMAC",
+            "hashFunctions": ["SHA-256", "SHA-384", "SHA-512"]
+        }
+    },
+
+    "TLS": {
+        "protocolProperties": {
+            "protocolType": "tls",
+            "versions": ["1.0", "1.1", "1.2", "1.3"]
+        }
     }
 }
 
-FUNCTION_HINTS = {
-    "openssl": "OpenSSL EVP",
-    "libcrypto": "OpenSSL libcrypto",
-    "libssl": "OpenSSL TLS",
-    "bcrypt": "Windows CNG (bcrypt)",
-    "ncrypt": "Windows CNG (ncrypt)",
-    "ssh": "SSH crypto subsystem",
-    "ipsec": "IPsec / IKE",
-}
-
-PROTOCOL_HINTS = {
-    "https": "TLS",
-    "ssl": "TLS",
-    "tls": "TLS",
-    "ssh": "SSH",
-    "ipsec": "IPsec",
-    "ike": "IPsec",
-    "openvpn": "VPN",
-}
-
-CRYPTO_LIBS_LINUX = [
-    "libssl", "libcrypto", "libgnutls",
-    "libmbedtls", "libwolfssl", "libgcrypt"
+CRYPTO_LIB_PATTERNS = [
+    "libcrypto",
+    "libssl",
+    "mbedtls",
+    "wolfssl",
+    "boringssl",
+    "libsodium",
+    "libgcrypt",
+    "nettle"
 ]
 
-CRYPTO_LIBS_WINDOWS = [
-    "libssl", "libcrypto",
-    "bcrypt.dll", "ncrypt.dll", "crypt32.dll", "schannel"
-]
+# ==========================================================
+# COMMAND EXECUTION
+# ==========================================================
 
-# -----------------------------
-# Detection helpers
-# -----------------------------
-
-def scan_text_for_crypto(text):
-    findings = []
-    for algo, meta in CRYPTO_RULES.items():
-        for pat in meta["patterns"]:
-            for m in re.findall(pat, text, re.IGNORECASE):
-                key_size = ""
-                if isinstance(m, tuple):
-                    m = next((x for x in m if x.isdigit()), "")
-                if isinstance(m, str) and m.isdigit():
-                    key_size = m
-
-                findings.append({
-                    "algorithm": algo,
-                    "primitive": meta["primitive"],
-                    "key_size": key_size
-                })
-    return findings
-
-def scan_loaded_libraries(proc):
-    libs = []
+def run_cmd(cmd):
     try:
-        maps = proc.memory_maps()
-        for m in maps:
-            path = m.path.lower()
-            candidates = CRYPTO_LIBS_WINDOWS if OS_TYPE == "windows" else CRYPTO_LIBS_LINUX
-            for lib in candidates:
-                if lib in path:
-                    libs.append(lib)
+        if OS_TYPE == "windows":
+            return subprocess.check_output(
+                cmd, stderr=subprocess.DEVNULL, shell=True
+            ).decode(errors="ignore")
+        else:
+            return subprocess.check_output(
+                cmd, stderr=subprocess.DEVNULL
+            ).decode(errors="ignore")
     except Exception:
-        pass
-    return list(set(libs))
+        return ""
 
-def detect_function(text):
-    for k, v in FUNCTION_HINTS.items():
-        if k in text:
-            return v
-    return ""
+# ==========================================================
+# RUNNING PROCESS DISCOVERY
+# ==========================================================
 
-def detect_protocol(text):
-    for k, v in PROTOCOL_HINTS.items():
-        if k in text:
-            return v
-    return ""
+def list_running_binaries():
+    binaries = set()
 
-# -----------------------------
-# Main scan
-# -----------------------------
-
-def main():
-    rows = []
-    scan_time = datetime.utcnow().isoformat()
-
-    for proc in psutil.process_iter(["pid", "name", "exe", "cmdline"]):
-        print(proc)
-        try:
-            pid = proc.pid
-            name = proc.info.get("name") or ""
-            exe = proc.info.get("exe") or ""
-            cmdline = " ".join(proc.info.get("cmdline") or [])
-
-            search_blob = f"{name} {exe} {cmdline}".lower()
-
-            crypto_hits = scan_text_for_crypto(search_blob)
-            libs = scan_loaded_libraries(proc)
-
-            if not crypto_hits and not libs:
+    if OS_TYPE == "unix":
+        for pid in os.listdir("/proc"):
+            if not pid.isdigit():
+                continue
+            exe = f"/proc/{pid}/exe"
+            try:
+                real = os.readlink(exe)
+                if os.path.isfile(real) and os.access(real, os.X_OK):
+                    binaries.add(real)
+            except Exception:
                 continue
 
-            function = detect_function(search_blob + " ".join(libs))
-            protocol = detect_protocol(search_blob)
+    else:
+        out = run_cmd("wmic process get ExecutablePath")
+        for line in out.splitlines():
+            p = line.strip()
+            if p and os.path.isfile(p):
+                binaries.add(p)
 
-            for hit in crypto_hits or [{"algorithm": "", "primitive": "", "key_size": ""}]:
-                rows.append([
-                    scan_time,
-                    OS_TYPE,
-                    pid,
-                    name,
-                    exe,
-                    hit["algorithm"],
-                    hit["primitive"],
-                    hit["key_size"] or "unknown",
-                    function,
-                    protocol,
-                    ",".join(libs),
-                ])
+    return sorted(binaries)
 
-        except (psutil.AccessDenied, psutil.NoSuchProcess):
+# ==========================================================
+# DEPENDENCY SCANNING
+# ==========================================================
+
+def get_crypto_deps(binary):
+    deps = set()
+
+    if OS_TYPE == "unix":
+        out = run_cmd(["ldd", binary])
+    else:
+        out = run_cmd(f'dumpbin /imports "{binary}"')
+
+    for line in out.splitlines():
+        for lib in CRYPTO_LIB_PATTERNS:
+            if lib.lower() in line.lower():
+                deps.add(lib)
+
+    return ",".join(sorted(deps)) if deps else "none"
+
+# ==========================================================
+# CRYPTO DETECTION
+# ==========================================================
+
+def detect_crypto(binary):
+    results = []
+
+    if OS_TYPE == "unix":
+        strings_out = run_cmd(["strings", binary]).lower()
+        symbols_out = run_cmd(["nm", "-D", binary]).lower()
+        deps_out = run_cmd(["ldd", binary]).lower()
+    else:
+        strings_out = run_cmd(f'strings "{binary}"').lower()
+        symbols_out = run_cmd(f'dumpbin /symbols "{binary}"').lower()
+        deps_out = run_cmd(f'dumpbin /imports "{binary}"').lower()
+
+    for name, meta in CRYPTO_RULES.items():
+        algo = meta.get("algorithmProperties", {})
+        proto = meta.get("protocolProperties", {})
+
+        if name.lower() not in strings_out and name.lower() not in symbols_out:
             continue
 
-    # -----------------------------
-    # CSV Output
-    # -----------------------------
+        entry = {
+            "algorithm": algo.get("algorithm", name),
+            "primitive": algo.get("primitive", proto.get("protocolType", "unknown")),
+            "parameters": {},
+            "confidence": "low",
+            "detection_source": []
+        }
 
-    with open(OUTPUT_CSV, "w", newline="", encoding="utf-8") as f:
+        for size in algo.get("keyLengths", []):
+            if str(size) in strings_out:
+                entry["parameters"]["keyLength"] = size
+                entry["confidence"] = "medium"
+                entry["detection_source"].append("string")
+                break
+
+        for mode in algo.get("modes", []):
+            if mode.lower() in strings_out:
+                entry["parameters"]["mode"] = mode
+                entry["detection_source"].append("string")
+                break
+
+        for curve in algo.get("curves", []):
+            if curve.lower() in strings_out:
+                entry["parameters"]["curve"] = curve
+                entry["confidence"] = "medium"
+                entry["detection_source"].append("string")
+                break
+
+        for h in algo.get("hashFunctions", []):
+            if h.lower() in strings_out:
+                entry["parameters"]["hash"] = h
+                entry["detection_source"].append("string")
+                break
+
+        for v in proto.get("versions", []):
+            if v in strings_out:
+                entry["parameters"]["version"] = v
+                entry["detection_source"].append("string")
+                break
+
+        if any(lib in deps_out for lib in ["libcrypto", "libssl"]):
+            entry["detection_source"].append("crypto-library")
+            entry["confidence"] = "medium"
+
+        if algo.get("deprecated"):
+            entry["deprecated"] = True
+
+        results.append(entry)
+
+    return results
+
+# ==========================================================
+# USAGE CLASSIFICATION
+# ==========================================================
+
+def classify_algorithm_usage(hit):
+    src = set(hit.get("detection_source", []))
+    if "symbol" in src:
+        return "used"
+    if "crypto-library" in src:
+        return "supported"
+    return "unknown"
+
+# ==========================================================
+# MAIN
+# ==========================================================
+
+def main():
+    with open("binaries_used.csv", "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow([
-            "scan_time",
-            "os",
-            "pid",
-            "process_name",
-            "executable",
+            "binary",
+            "os_type",
+            "crypto_library",
             "algorithm",
             "primitive",
-            "key_size",
-            "crypto_function",
-            "protocol",
-            "crypto_libraries",
+            "key_length",
+            "parameters",
+            "confidence",
+            "algorithm_usage",
+            "detection_source"
         ])
-        writer.writerows(rows)
 
-    print(f"[+] Scan completed")
-    print(f"[+] Entries: {len(rows)}")
-    print(f"[+] Output: {OUTPUT_CSV}")
+        for binary in list_running_binaries():
+            print(f"[+] Scanning: {binary}")
 
-# -----------------------------
+            libs = get_crypto_deps(binary)
+            if libs == "none":
+                continue
+
+            hits = detect_crypto(binary)
+            if not hits:
+                writer.writerow([
+                    binary, OS_TYPE, libs,
+                    "unknown", "unknown", "unknown",
+                    "none", "low", "unknown", "ldd/imports"
+                ])
+                continue
+
+            for hit in hits:
+                params = hit.get("parameters", {})
+                key_len = params.pop("keyLength", "unknown")
+                param_str = "; ".join(f"{k}={v}" for k, v in params.items()) or "none"
+
+                writer.writerow([
+                    binary,
+                    OS_TYPE,
+                    libs,
+                    hit["algorithm"],
+                    hit["primitive"],
+                    key_len,
+                    param_str,
+                    hit["confidence"],
+                    classify_algorithm_usage(hit),
+                    ",".join(hit["detection_source"])
+                ])
+
 if __name__ == "__main__":
     main()
