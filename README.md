@@ -23,7 +23,7 @@ Download all codes in a directory
 $pip install -r requirements.txt
 
 2. RUNNING SCRIPT 1 to 8 WITH
-   $sudo python <script>
+   <br> $sudo python <script> </br>
 
 3. RUNNING SCRIPT 9
    <br> a. $mkdir result </br>
