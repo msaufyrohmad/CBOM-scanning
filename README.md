@@ -34,7 +34,7 @@ $pip install -r requirements.txt
    <br> c.run the script with </br>
      <br> $sudo python 9NetworkProtocol.py --out-dir=result target </br>
 
-4.<br> The code will be updated from time to time </br>
+4.The code will be updated from time to time 
 
 <br> please update and give comment!</br>
 
