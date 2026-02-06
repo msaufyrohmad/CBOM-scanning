@@ -26,13 +26,13 @@ $pip install -r requirements.txt
    $sudo python <script>
 
 3. RUNNING SCRIPT 9
-   a. $mkdir result
-   b. put domain inside a file, eg :
-     $vim target
-     uitm.edu.my
-     upm.edu.my
-   c.run the script with
-     $sudo python 9NetworkProtocol.py --out-dir=result target
+   <br> a. $mkdir result </br>
+   <br> b. put domain inside a file, eg : </br>
+     <br> $vim target </br>
+     <br> uitm.edu.my </br>
+     <br> upm.edu.my </br>
+   <br> c.run the script with </br>
+     <br> $sudo python 9NetworkProtocol.py --out-dir=result target </br>
 
 4.<br> The code will be updated from time to time </br>
 
