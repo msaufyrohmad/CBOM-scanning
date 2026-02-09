@@ -5,6 +5,10 @@ import platform
 import subprocess
 import csv
 import re
+import psutil
+
+from crypto_rules import CRYPTO_RULES
+from crypto_rules import CRYPTO_LIB_PATTERNS
 
 # ==========================================================
 # OS DETECTION
@@ -18,137 +22,47 @@ def detect_os():
 OS_TYPE = detect_os()
 
 # ==========================================================
-# CRYPTO RULES (CycloneDX-aligned)
-# ==========================================================
+# BINARY STATE
+# =========================================================
 
-CRYPTO_RULES = {
-    # === Symmetric Block Ciphers ===
-    "AES": {
-        "assetType": "algorithm",
-        "algorithmProperties": {
-            "primitive": "block-cipher",
-            "algorithm": "AES",
-            "modes": ["ECB", "CBC", "CTR", "GCM", "CCM", "XTS"],
-            "keyLengths": [128, 192, 256]
-        }
-    },
-    "3DES": {
-        "assetType": "algorithm",
-        "algorithmProperties": {
-            "primitive": "block-cipher",
-            "algorithm": "3DES",
-            "keyLengths": [112, 168]
-        }
-    },
-    "DES": {
-        "assetType": "algorithm",
-        "algorithmProperties": {
-            "primitive": "block-cipher",
-            "algorithm": "DES",
-            "deprecated": True,
-            "keyLengths": [56]
-        }
-    },
-    "Blowfish": {"assetType":"algorithm","algorithmProperties":{"primitive":"block-cipher","algorithm":"Blowfish"}},
-    "CAST5": {"assetType":"algorithm","algorithmProperties":{"primitive":"block-cipher","algorithm":"CAST5"}},
-    "CAST6": {"assetType":"algorithm","algorithmProperties":{"primitive":"block-cipher","algorithm":"CAST6"}},
-    "RC2": {"assetType":"algorithm","algorithmProperties":{"primitive":"block-cipher","algorithm":"RC2"}},
-    "RC5": {"assetType":"algorithm","algorithmProperties":{"primitive":"block-cipher","algorithm":"RC5"}},
-    "RC6": {"assetType":"algorithm","algorithmProperties":{"primitive":"block-cipher","algorithm":"RC6"}},
-    "Twofish": {"assetType":"algorithm","algorithmProperties":{"primitive":"block-cipher","algorithm":"Twofish"}},
-    "CAMELLIA": {"assetType":"algorithm","algorithmProperties":{"primitive":"block-cipher","algorithm":"CAMELLIA"}},
-    "Serpent": {"assetType":"algorithm","algorithmProperties":{"primitive":"block-cipher","algorithm":"Serpent"}},
-    "ARIA": {"assetType":"algorithm","algorithmProperties":{"primitive":"block-cipher","algorithm":"ARIA"}},
+def check_binary_state(file_path):
+    """
+    Differentiates the state of a binary: In Use, In Transit, or At Rest.
+    """
+    if not os.path.exists(file_path):
+        return "File does not exist on disk."
 
-    # === Stream Ciphers ===
-    "ChaCha": {"assetType":"algorithm","algorithmProperties":{"primitive":"stream-cipher","algorithm":"ChaCha"}},
-    "ChaCha20": {"assetType":"algorithm","algorithmProperties":{"primitive":"stream-cipher","algorithm":"ChaCha20"}},
-    "Salsa20": {"assetType":"algorithm","algorithmProperties":{"primitive":"stream-cipher","algorithm":"Salsa20"}},
-    "RABBIT": {"assetType":"algorithm","algorithmProperties":{"primitive":"stream-cipher","algorithm":"RABBIT"}},
-    "3GPP-XOR": {"assetType":"algorithm","algorithmProperties":{"primitive":"stream-cipher","algorithm":"3GPP-XOR"}},
-    "A5/1": {"assetType":"algorithm","algorithmProperties":{"primitive":"stream-cipher","algorithm":"A5/1"}},
-    "A5/2": {"assetType":"algorithm","algorithmProperties":{"primitive":"stream-cipher","algorithm":"A5/2"}},
-    "CMEA": {"assetType":"algorithm","algorithmProperties":{"primitive":"mac","algorithm":"CMEA"}},
+    abs_path = os.path.abspath(file_path)
+    file_name = os.path.basename(file_path)
 
-    # === AEAD ===
-    "AES-GCM": {"assetType":"algorithm","algorithmProperties":{"primitive":"aead","algorithm":"AES","mode":"GCM"}},
-    "CHACHA20-POLY1305": {"assetType":"algorithm","algorithmProperties":{"primitive":"aead","algorithm":"ChaCha20","mac":"Poly1305"}},
+    # 1. CHECK FOR "IN USE" (Process Table)
+    # We look for any process whose executable path matches our binary
+    for proc in psutil.process_iter(['exe', 'name']):
+        try:
+            if proc.info['exe'] and os.path.abspath(proc.info['exe']) == abs_path:
+                return f"STATE: IN USE (Running as PID {proc.pid})"
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
 
-    # === MAC ===
-    "Poly1305": {"assetType":"algorithm","algorithmProperties":{"primitive":"mac","algorithm":"Poly1305"}},
-    "CMAC": {"assetType":"algorithm","algorithmProperties":{"primitive":"mac","algorithm":"CMAC"}},
-    "HMAC": {"assetType":"algorithm","algorithmProperties":{"primitive":"mac","algorithm":"HMAC","hashFunctions":["SHA-256","SHA-384","SHA-512"]}},
+    # 2. CHECK FOR "IN TRANSIT" (Network/Open Handles)
+    # We check if a network-related process (wget, scp, curl, rsync) has a handle on this file
+    transit_tools = ['wget', 'scp', 'rsync', 'curl', 'sftp-server', 'transmission']
+    for proc in psutil.process_iter(['name', 'open_files']):
+        try:
+            # Check if it's a known transfer tool
+            if proc.info['name'] in transit_tools:
+                files = proc.open_files()
+                if files:
+                    for f in files:
+                        if os.path.abspath(f.path) == abs_path:
+                            return f"STATE: IN TRANSIT (Being moved by {proc.info['name']})"
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
 
-    # === Hash Functions ===
-    "SHA-1": {"assetType":"algorithm","algorithmProperties":{"primitive":"hash-function","algorithm":"SHA-1","deprecated":True}},
-    "SHA-2": {"assetType":"algorithm","algorithmProperties":{"primitive":"hash-function","algorithm":"SHA-2"}},
-    "SHA-3": {"assetType":"algorithm","algorithmProperties":{"primitive":"hash-function","algorithm":"SHA-3"}},
-    "SHA-256": {"assetType":"algorithm","algorithmProperties":{"primitive":"hash-function","algorithm":"SHA-256"}},
-    "SHA-384": {"assetType":"algorithm","algorithmProperties":{"primitive":"hash-function","algorithm":"SHA-384"}},
-    "SHA-512": {"assetType":"algorithm","algorithmProperties":{"primitive":"hash-function","algorithm":"SHA-512"}},
-    "MD2": {"assetType":"algorithm","algorithmProperties":{"primitive":"hash-function","algorithm":"MD2"}},
-    "MD4": {"assetType":"algorithm","algorithmProperties":{"primitive":"hash-function","algorithm":"MD4"}},
-    "MD5": {"assetType":"algorithm","algorithmProperties":{"primitive":"hash-function","algorithm":"MD5","deprecated":True}},
-    "BLAKE2": {"assetType":"algorithm","algorithmProperties":{"primitive":"hash-function","algorithm":"BLAKE2"}},
-    "BLAKE3": {"assetType":"algorithm","algorithmProperties":{"primitive":"hash-function","algorithm":"BLAKE3"}},
-    "RIPEMD": {"assetType":"algorithm","algorithmProperties":{"primitive":"hash-function","algorithm":"RIPEMD"}},
-    "bcrypt": {"assetType":"algorithm","algorithmProperties":{"primitive":"hash-function","algorithm":"bcrypt"}},
+    # 3. CHECK FOR "AT REST" (Default)
+    # If it's on disk but not in the process table or being handled by a transfer tool
+    return "STATE: AT REST (Static on disk)"
 
-    # === Public Key / Digital Signature ===
-    "RSAES-PKCS1": {"assetType":"algorithm","algorithmProperties":{"primitive":"public-key-encryption","algorithm":"RSA","keyLengths":[1024,2048,3072,4096],"paddings":["PKCS1v1.5"]}},
-    "RSAES-OAEP": {"assetType":"algorithm","algorithmProperties":{"primitive":"public-key-encryption","algorithm":"RSA","keyLengths":[1024,2048,3072,4096],"paddings":["OAEP"]}},
-    "RSASSA-PKCS1": {"assetType":"algorithm","algorithmProperties":{"primitive":"digital-signature","algorithm":"RSA"}},
-    "RSASSA-PSS": {"assetType":"algorithm","algorithmProperties":{"primitive":"digital-signature","algorithm":"RSA","paddings":["PSS"]}},
-    "DSA": {"assetType":"algorithm","algorithmProperties":{"primitive":"digital-signature","algorithm":"DSA"}},
-    "ECDSA": {"assetType":"algorithm","algorithmProperties":{"primitive":"digital-signature","algorithm":"ECDSA","curves":["P-256","P-384","P-521","secp256k1"],"hashFunctions":["SHA-256","SHA-384","SHA-512"]}},
-    "EdDSA": {"assetType":"algorithm","algorithmProperties":{"primitive":"digital-signature","algorithm":"EdDSA"}},
-    "ECIES": {"assetType":"algorithm","algorithmProperties":{"primitive":"key-agreement","algorithm":"ECIES"}},
-    "ECDH": {"assetType":"algorithm","algorithmProperties":{"primitive":"key-agreement","algorithm":"ECDH","curves":["P-256","P-384","X25519","X448"]}},
-    "X3DH": {"assetType":"algorithm","algorithmProperties":{"primitive":"key-agreement","algorithm":"X3DH"}},
-    "FFDH": {"assetType":"algorithm","algorithmProperties":{"primitive":"key-agreement","algorithm":"FFDH"}},
-    "ElGamal": {"assetType":"algorithm","algorithmProperties":{"primitive":"public-key-encryption","algorithm":"ElGamal"}},
-    "BLS": {"assetType":"algorithm","algorithmProperties":{"primitive":"digital-signature","algorithm":"BLS"}},
-    "XMSS": {"assetType":"algorithm","algorithmProperties":{"primitive":"digital-signature","algorithm":"XMSS"}},
-    "ML-KEM": {"assetType":"algorithm","algorithmProperties":{"primitive":"key-agreement","algorithm":"ML-KEM"}},
-    "ML-DSA": {"assetType":"algorithm","algorithmProperties":{"primitive":"digital-signature","algorithm":"ML-DSA"}},
-
-    # === KDF / PRF / RNG ===
-    "PBKDF1": {"assetType":"algorithm","algorithmProperties":{"primitive":"key-derivation","algorithm":"PBKDF1"}},
-    "PBKDF2": {"assetType":"algorithm","algorithmProperties":{"primitive":"key-derivation","algorithm":"PBKDF2"}},
-    "PBES1": {"assetType":"algorithm","algorithmProperties":{"primitive":"key-derivation","algorithm":"PBES1"}},
-    "PBES2": {"assetType":"algorithm","algorithmProperties":{"primitive":"key-derivation","algorithm":"PBES2"}},
-    "PBMAC1": {"assetType":"algorithm","algorithmProperties":{"primitive":"key-derivation","algorithm":"PBMAC1"}},
-    "HKDF": {"assetType":"algorithm","algorithmProperties":{"primitive":"key-derivation","algorithm":"HKDF"}},
-    "SP800-108": {"assetType":"algorithm","algorithmProperties":{"primitive":"key-derivation","algorithm":"SP800-108"}},
-    "KMAC": {"assetType":"algorithm","algorithmProperties":{"primitive":"key-derivation","algorithm":"KMAC"}},
-    "Fortuna": {"assetType":"algorithm","algorithmProperties":{"primitive":"random-generator","algorithm":"Fortuna"}},
-    "Yarrow": {"assetType":"algorithm","algorithmProperties":{"primitive":"random-generator","algorithm":"Yarrow"}},
-    "TUAK": {"assetType":"algorithm","algorithmProperties":{"primitive":"random-generator","algorithm":"TUAK"}},
-    "MILENAGE": {"assetType":"algorithm","algorithmProperties":{"primitive":"key-derivation","algorithm":"MILENAGE"}},
-
-    # === Protocols ===
-    "TLS": {"assetType":"protocol","protocolProperties":{"protocolType":"tls","versions":["1.0","1.1","1.2","1.3"]}},
-    "SSL": {"assetType":"protocol","protocolProperties":{"protocolType":"ssl","versions":["2.0","3.0"],"deprecated":True}},
-    "IPSec": {"assetType": "protocol","protocolProperties": {"protocolType": "ipsec","versions": ["IKEv1", "IKEv2"] }},
-    "SSH" : {"assetType": "protocol","protocolProperties": {"protocolType": "ssh","versions": ["1.0", "2.0"], "deprecated": True }},
-
-    # === Others / miscellaneous default entries ===
-    "IDEA": {"assetType":"algorithm","algorithmProperties":{"primitive":"block-cipher","algorithm":"IDEA"}},
-    "SNOW3G": {"assetType":"algorithm","algorithmProperties":{"primitive":"stream-cipher","algorithm":"SNOW3G"}},
-    "Skipjack": {"assetType":"algorithm","algorithmProperties":{"primitive":"block-cipher","algorithm":"Skipjack"}},
-    "SEED": {"assetType":"algorithm","algorithmProperties":{"primitive":"block-cipher","algorithm":"SEED"}}
-}
-
-CRYPTO_LIB_PATTERNS = [
-    "libcrypto",
-    "libssl",
-    "mbedtls",
-    "wolfssl",
-    "boringssl",
-    "libgcrypt",
-    "libsodium",
-    "nettle"
-]
 
 
 # ==========================================================
@@ -180,22 +94,46 @@ def is_executable(path):
         return os.path.isfile(path) and path.lower().endswith(".exe")
     return os.path.isfile(path) and os.access(path, os.X_OK)
 
-def list_binaries():
+def list_running_binaries():
     binaries = set()
-    for d in os.environ.get("PATH", "").split(os.pathsep):
-        if os.path.isdir(d):
-            for f in os.listdir(d):
-                p = os.path.join(d, f)
-                if is_executable(p):
-                    binaries.add(p)
-    return sorted(binaries)
 
+    if OS_TYPE == "unix":
+        proc_dir = "/proc"
+        for pid in os.listdir(proc_dir):
+            if not pid.isdigit():
+                continue
+            exe_path = os.path.join(proc_dir, pid, "exe")
+            try:
+                real_exe = os.readlink(exe_path)
+                if os.path.isfile(real_exe) and os.access(real_exe, os.X_OK):
+                    binaries.add(real_exe)
+            except Exception:
+                continue
+
+    else:  # Windows
+        # Get PIDs
+        tasklist = run_cmd("tasklist /FO CSV /NH")
+        for line in tasklist.splitlines():
+            if not line.strip():
+                continue
+            exe_name = line.split('","')[0].strip('"')
+
+            # Resolve full path
+            wmic = run_cmd(f'wmic process where name="{exe_name}" get ExecutablePath /value')
+            for l in wmic.splitlines():
+                if l.lower().startswith("executablepath="):
+                    path = l.split("=", 1)[1].strip()
+                    if os.path.isfile(path):
+                        binaries.add(path)
+
+    print(len(binaries)," detected")
+    return sorted(binaries)
 # ==========================================================
 # DEPENDENCY SCANNING
 # ==========================================================
 
 def get_crypto_deps(binary):
-    deps = set()
+    deps = list()
 
     if OS_TYPE == "unix":
         out = run_cmd(["ldd", binary])
@@ -205,7 +143,7 @@ def get_crypto_deps(binary):
     for line in out.splitlines():
         for lib in CRYPTO_LIB_PATTERNS:
             if lib.lower() in line.lower():
-                deps.add(lib)
+                deps.append(lib)
 
     return ",".join(sorted(deps)) if deps else "none"
 
@@ -296,27 +234,100 @@ def classify_algorithm_usage(hit):
     return "unknown"
 
 # ==========================================================
+# LIBRARY CLASSIFICATIONS
+# ==========================================================
+
+def classify_libraries(binary_path):
+    if not os.path.exists(binary_path):
+        print(f"Error: File '{binary_path}' not found.")
+        return
+
+    try:
+        # Run ldd and capture output
+        result = subprocess.check_output(['ldd', binary_path], stderr=subprocess.STDOUT).decode()
+    except subprocess.CalledProcessError:
+        print(f"Error: Could not run ldd on {binary_path}. Is it a valid binary?")
+        return
+
+    system_libs = []
+    third_party_libs = []
+
+    # Standard system paths
+    system_paths = ['/lib', '/usr/lib', '/lib64']
+
+    for line in result.splitlines():
+        if "=>" in line:
+            parts = line.split("=>")
+            lib_name = parts[0].strip()
+            lib_path = parts[1].split('(')[0].strip()
+
+            if not lib_path or lib_path == "not found":
+                continue
+
+            # Check if the path starts with a standard system directory
+            is_system = any(lib_path.startswith(p) for p in system_paths)
+            
+            # Exclude /usr/local/lib as it is usually for third-party
+            if lib_path.startswith('/usr/local/lib'):
+                is_system = False
+
+            if is_system:
+                system_libs.append(lib_path)
+            else:
+                third_party_libs.append(lib_path)
+
+    return third_party_libs,system_libs
+
+
+# ===================================================================
+# GUESS PRORGRAMMING LANGUAGE
+# ==================================================================
+
+def guess_language(binary_path):
+    signatures = {
+        "Go": ["go.runtime", "runtime.gopanic"],
+        "Rust": ["rustc/", "rust_panic"],
+        "Python": ["py_runmain", "PyZipFile", "_PYI"],
+        "C++": ["GLIBCXX", "std::"],
+        "Java": ["JNI_CreateJavaVM", "java/lang/Object"]
+    }
+
+    try:
+        # Get strings from the binary
+        output = subprocess.check_output(['strings', binary_path]).decode(errors='ignore')
+        
+        for lang, sigs in signatures.items():
+            if any(sig in output for sig in sigs):
+                return lang
+        
+        return "C" 
+    except Exception as e:
+        return f"Error: {e}"
+
+# ==========================================================
 # MAIN
 # ==========================================================
 
 def main():
-    with open("binary_in_path.csv", "w", newline="") as f:
+    with open("binaries_used.csv", "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow([
             "binary",
             "os_type",
-            "crypto_library",
-            "algorithm",
+            "language",
+	    "modules/libraries",
+	    "third party libraries",
             "primitive",
+            "algorithm",
+            "crypto_library",
             "key_length",
-            "parameters",
-            "confidence",
-            "algorithm_usage",
-            "detection_source"
+            "parameters"
         ])
 
-        for binary in list_binaries():
+        for binary in list_running_binaries():
             print(binary)
+            language=guess_language(binary)
+            third_party,system=classify_libraries(binary)
             libs = get_crypto_deps(binary)
             if libs == "none":
                 continue
@@ -326,14 +337,14 @@ def main():
                 writer.writerow([
                     binary,
                     OS_TYPE,
+                    "unknown",
+                    "unknown",
+                    "unknown",
+                    "unknown",
+                    "unknown",
                     libs,
                     "unknown",
-                    "unknown",
-                    "unknown",
-                    "none",
-                    "low",
-                    "unknown",
-                    "ldd/imports"
+                    "none"
                 ])
                 continue
 
@@ -345,15 +356,34 @@ def main():
                 writer.writerow([
                     binary,
                     OS_TYPE,
-                    libs,
-                    hit["algorithm"],
+                    language,
+                    system,
+                    third_party,
                     hit["primitive"],
+                    hit["algorithm"],
+                    libs,
                     key_len,
-                    param_str,
-                    hit["confidence"],
-                    classify_algorithm_usage(hit),
-                    ",".join(hit["detection_source"])
+                    param_str
                 ])
+
+def display():
+	for binary in list_running_binaries():
+            language=guess_language(binary)
+            third_party,system=classify_libraries(binary)
+            libs = get_crypto_deps(binary)
+            state = check_binary_state(binary)
+            if libs == "none":
+                continue
+            print("Binary : ", binary)
+            print("Language : ", language)
+            print("State : ", state)
+            print("System Library : ", system)
+            print("Third Party Library : ",third_party)
+            print("Crypto Library : ",libs)
+            hits = detect_crypto(binary)
+            #for hit in hits:
+            #    print(hit)
 
 if __name__ == "__main__":
     main()
+#     display()
