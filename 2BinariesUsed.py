@@ -4,6 +4,8 @@ import os
 import platform
 import subprocess
 import csv
+import re
+import psutil
 
 # ==========================================================
 # OS DETECTION
@@ -158,42 +160,83 @@ def run_cmd(cmd):
     try:
         if OS_TYPE == "windows":
             return subprocess.check_output(
-                cmd, stderr=subprocess.DEVNULL, shell=True
+                cmd,
+                stderr=subprocess.DEVNULL,
+                shell=True
             ).decode(errors="ignore")
         else:
             return subprocess.check_output(
-                cmd, stderr=subprocess.DEVNULL
+                cmd,
+                stderr=subprocess.DEVNULL
             ).decode(errors="ignore")
     except Exception:
         return ""
 
 # ==========================================================
-# RUNNING PROCESS DISCOVERY
+# EXECUTABLE DISCOVERY
 # ==========================================================
 
-def list_running_binaries():
+def is_executable(path):
+    if OS_TYPE == "windows":
+        return os.path.isfile(path) and path.lower().endswith(".exe")
+    return os.path.isfile(path) and os.access(path, os.X_OK)
+
+def list_binaries():
     binaries = set()
-
-    if OS_TYPE == "unix":
-        for pid in os.listdir("/proc"):
-            if not pid.isdigit():
-                continue
-            exe = f"/proc/{pid}/exe"
-            try:
-                real = os.readlink(exe)
-                if os.path.isfile(real) and os.access(real, os.X_OK):
-                    binaries.add(real)
-            except Exception:
-                continue
-
-    else:
-        out = run_cmd("wmic process get ExecutablePath")
-        for line in out.splitlines():
-            p = line.strip()
-            if p and os.path.isfile(p):
-                binaries.add(p)
-
+    for d in os.environ.get("PATH", "").split(os.pathsep):
+        if os.path.isdir(d):
+            for f in os.listdir(d):
+                p = os.path.join(d, f)
+                if is_executable(p):
+                    binaries.add(p)
     return sorted(binaries)
+
+
+# ==========================================================
+# BINARY STATE
+# =========================================================
+
+def check_binary_state(file_path):
+    """ 
+    Differentiates the state of a binary: In Use, In Transit, or At Rest.
+    """
+    if not os.path.exists(file_path):
+        return "File does not exist on disk."
+
+    abs_path = os.path.abspath(file_path)
+    file_name = os.path.basename(file_path)
+
+    # 1. CHECK FOR "IN USE" (Process Table)
+    # We look for any process whose executable path matches our binary
+    for proc in psutil.process_iter(['exe', 'name']):
+        try:
+            if proc.info['exe'] and os.path.abspath(proc.info['exe']) == abs_path:
+                return f"STATE: IN USE (Running as PID {proc.pid})"
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+
+    # 2. CHECK FOR "IN TRANSIT" (Network/Open Handles)
+    # We check if a network-related process (wget, scp, curl, rsync) has a handle on this file
+    transit_tools = ['wget', 'scp', 'rsync', 'curl', 'sftp-server', 'transmission']
+    for proc in psutil.process_iter(['name', 'open_files']):
+        try:
+            # Check if it's a known transfer tool
+            if proc.info['name'] in transit_tools:
+                files = proc.open_files()
+                if files:
+                    for f in files:
+                        if os.path.abspath(f.path) == abs_path:
+                            return f"STATE: IN TRANSIT (Being moved by {proc.info['name']})"
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+
+    # 3. CHECK FOR "AT REST" (Default)
+    # If it's on disk but not in the process table or being handled by a transfer tool
+    return "STATE: AT REST (Static on disk)"
+
+
+
+
 
 # ==========================================================
 # DEPENDENCY SCANNING
@@ -246,7 +289,7 @@ def detect_crypto(binary):
         }
 
         for size in algo.get("keyLengths", []):
-            if str(size) in strings_out:
+            if f"{size}" in strings_out:
                 entry["parameters"]["keyLength"] = size
                 entry["confidence"] = "medium"
                 entry["detection_source"].append("string")
@@ -301,28 +344,109 @@ def classify_algorithm_usage(hit):
     return "unknown"
 
 # ==========================================================
-# MAIN
+# LIBRARY CLASSIFICATIONS
 # ==========================================================
 
+def classify_libraries(binary_path):
+    if not os.path.exists(binary_path):
+        print(f"Error: File '{binary_path}' not found.")
+        return [], []
+
+    # --- STEP 1: VALIDATE IF C/C++ BINARY (ELF CHECK) ---
+    # We check the first 4 bytes for the ELF magic number: \x7fELF
+    try:
+        with open(binary_path, 'rb') as f:
+            magic = f.read(4)
+            if magic != b'\x7fELF':
+                print(f"Skipping: {binary_path} is not a compiled C/C++ ELF binary (likely a script or data).")
+                return [], []
+    except Exception as e:
+        print(f"Error reading file: {e}")
+        return [], []
+
+    # --- STEP 2: RUN LDD ANALYSIS ---
+    try:
+        result = subprocess.check_output(['ldd', binary_path], stderr=subprocess.STDOUT).decode()
+    except subprocess.CalledProcessError:
+        # This often happens if the binary is for a different architecture (e.g., ARM binary on x86)
+        print(f"Error: ldd failed on {binary_path}. Architecture mismatch or corrupted binary.")
+        return [], []
+
+    system_libs = []
+    third_party_libs = []
+    system_paths = ['/lib', '/usr/lib', '/lib64']
+
+    for line in result.splitlines():
+        if "=>" in line:
+            parts = line.split("=>")
+            lib_name = parts[0].strip()
+            lib_path = parts[1].split('(')[0].strip()
+
+            if not lib_path or lib_path == "not found":
+                continue
+
+            is_system = any(lib_path.startswith(p) for p in system_paths)
+            
+            # Refine third-party check
+            if lib_path.startswith('/usr/local/lib'):
+                is_system = False
+
+            if is_system:
+                system_libs.append(lib_path)
+            else:
+                third_party_libs.append(lib_path)
+
+    return third_party_libs, system_libs
+
+# ===================================================================
+# GUESS PRORGRAMMING LANGUAGE
+# ==================================================================
+
+def guess_language(binary_path):
+    signatures = { 
+        "Go": ["go.runtime", "runtime.gopanic"],
+        "Rust": ["rustc/", "rust_panic"],
+        "Python": ["py_runmain", "PyZipFile", "_PYI"],
+        "C++": ["GLIBCXX", "std::"],
+        "Java": ["JNI_CreateJavaVM", "java/lang/Object"]
+    }   
+
+    try:
+        # Get strings from the binary
+        output = subprocess.check_output(['strings', binary_path]).decode(errors='ignore')
+    
+        for lang, sigs in signatures.items():
+            if any(sig in output for sig in sigs):
+                return lang
+    
+        return "C" 
+    except Exception as e:
+        return f"Error: {e}"
+
+
+# ==========================================================
+# MAIN NEW
+# =========================================================
 def main():
-    with open("binaries_used.csv", "w", newline="") as f:
+    with open("binaries_at_disk.csv", "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow([
             "binary",
             "os_type",
-            "crypto_library",
-            "algorithm",
+            "language",
+	    "modules/libraries",
+	    "third party libraries",
             "primitive",
+            "algorithm",
+            "crypto_library",
             "key_length",
-            "parameters",
-            "confidence",
-            "algorithm_usage",
-            "detection_source"
+            "parameters"
         ])
 
-        for binary in list_running_binaries():
-            print(f"[+] Scanning: {binary}")
-
+        for binary in list_binaries():
+            print(binary)
+            language=guess_language(binary)
+            third_party,system=classify_libraries(binary)
             libs = get_crypto_deps(binary)
             if libs == "none":
                 continue
@@ -330,9 +454,16 @@ def main():
             hits = detect_crypto(binary)
             if not hits:
                 writer.writerow([
-                    binary, OS_TYPE, libs,
-                    "unknown", "unknown", "unknown",
-                    "none", "low", "unknown", "ldd/imports"
+                    binary,
+                    OS_TYPE,
+                    "unknown",
+                    "unknown",
+                    "unknown",
+                    "unknown",
+                    "unknown",
+                    libs,
+                    "unknown",
+                    "none"
                 ])
                 continue
 
@@ -344,15 +475,36 @@ def main():
                 writer.writerow([
                     binary,
                     OS_TYPE,
-                    libs,
-                    hit["algorithm"],
+                    language,
+                    system,
+                    third_party,
                     hit["primitive"],
+                    hit["algorithm"],
+                    libs,
                     key_len,
-                    param_str,
-                    hit["confidence"],
-                    classify_algorithm_usage(hit),
-                    ",".join(hit["detection_source"])
+                    param_str
                 ])
+
+def display():
+	for binary in list_binaries():
+            language=guess_language(binary)
+            third_party,system=classify_libraries(binary)
+            libs = get_crypto_deps(binary)
+            state = check_binary_state(binary)
+            if libs == "none":
+                continue
+            print("Binary : ", binary)
+            print("Language : ", language)
+            print("State : ", state)
+            print("System Library : ", system)
+            print("Third Party Library : ",third_party)
+            print("Crypto Library : ",libs)
+            hits = detect_crypto(binary)
+            for hit in hits:
+                print(hit)
+
+
 
 if __name__ == "__main__":
     main()
+#    display()
