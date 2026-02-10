@@ -11,7 +11,8 @@ Crypography in All Layers
 
 
 Types of Cryptographic Sources
-<img width="1003" height="565" alt="image" src="https://github.com/user-attachments/assets/8a81efb5-f083-4aa8-b14b-6ff468772f53" />
+<img width="931" height="472" alt="image" src="https://github.com/user-attachments/assets/16be887d-f637-4f00-bf61-d47e9137841a" />
+
 
 
 1. INSTALLATION 
