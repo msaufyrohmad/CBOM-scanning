@@ -37,7 +37,11 @@ $sudo python <script>
 
 ## 4.The code will be updated from time to time 
 
-We are improving the scanning accuracy (even we have a few version of crypto_scan) that we will published soon. 
+We are improving the scanning accuracy (even we have a few version of crypto_scan()) that we will published soon. 
+The (promise) version contains:
+4.1 CycloneDX v1.7 output
+4.2 PTPKM information added as cycloneDX Property
+4.3 Configuration inspection of Software 
 
 ### From 
 #### Muhammad Saufy Rohmad 
