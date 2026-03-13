@@ -1,6 +1,8 @@
-# CBOM-SCANNING
+# CBOM-SCANNER
 
 ## This is the codes for scanning various types of cryptography sources in the systems.
+This is the series of scrips to help organization to scan their servers and clients internally. The code run on both linux and windows but we are imporoving the windows detection.
+
 
 ### Cryptography in the system
 <img width="1003" height="565" alt="image" src="https://github.com/user-attachments/assets/a51c4196-c402-45d9-8ea4-e5295a0c9be9" />
@@ -60,6 +62,8 @@ The (promise) version contains:
 
 ## 5.Contact 
 Muhammad Saufy Rohmad 
-Malaysia Cryptology Technology and Management Center</br>
+
+Malaysia Cryptology Technology and Management Center
+
 saufy@uitm.edu.my
 
