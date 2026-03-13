@@ -17,9 +17,8 @@ This is the series of scrips to help organization to scan their servers and clie
 
 
 
-## 1. DEPENCENCY LIBRAIRES INSTALLATION 
+## 1. DEPENCENCY LIBRARIES INSTALLATION 
 
-Download all codes in a directory
 ```bash
 $git clone https://github.com/msaufyrohmad/CBOM-scanning.git
 $cd CBOM-scanning
