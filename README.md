@@ -66,3 +66,25 @@ Malaysia Cryptology Technology and Management Center
 
 saufy@uitm.edu.my
 
+---
+
+### For scanning binary run in docker
+
+```bash
+mkdir -p "$(pwd)/scan-out"
+```
+
+```bash
+docker build -t cbom-scanner:latest .
+```
+
+```bash
+docker run --rm --name cbom-scanner --pid=container:<your-container-name> --volumes-from <your-container-name>:ro --cap-add=SYS_PTRACE -v "$(pwd)/scan-out:/out" cbom-scanner:latest
+
+```
+
+##### Result on host:
+
+ls -lh ./scan-out/binaries_used.csv
+
+#### TODO currently only script no 1 tested. Contribution is welcomed
